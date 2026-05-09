@@ -9,7 +9,7 @@ interface User {
 }
 
 const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
-  const [currentUser, setCurrentUser] = useState(user);
+  const [currentUser] = useState(user);
 
   return (
     <div style={{ maxWidth: 600, margin: '0 auto', padding: 24 }}>
