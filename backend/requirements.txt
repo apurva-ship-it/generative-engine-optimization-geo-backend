@@ -1,0 +1,13 @@
+fastapi
+pydantic
+sqlalchemy
+alembic
+python-jose
+passlib[bcrypt]
+uvicorn
+pydantic-settings
+pytest
+httpx
+pytest-asyncio
+ruff
+mypy
