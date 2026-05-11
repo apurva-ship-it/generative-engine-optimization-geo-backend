@@ -1,0 +1,339 @@
+ High-Level Architecture: Autonomous PDLC Platform                                                                                            
+                                                                                                                                               
+  ---                                                                                                                                          
+  1. System Overview                                                                                                                           
+                                                                                                                                               
+  Core Capabilities:                                                                                                                           
+  - Ingest vague natural-language requirements from Linear or direct input
+  - Expand into structured specs, user stories, API contracts, and subtasks                                                                    
+  - Orchestrate specialized agents through code → review → fix → test → ship
+  - Fully observable, auditable, and recoverable from partial failures                                                                         
+                                                                                                                                               
+  Design Principles:                                                                                                                           
+  - Event-driven by default — agents emit events, not direct calls                                                                             
+  - Shared context, isolated execution — one memory store, sandboxed agent runtimes                                                            
+  - Fail-forward — every failure is classified, logged, and retried with backoff   
+  - Cost-aware — prompt caching, context compression, and model routing by task complexity                                                     
+  - Plug-and-play agents — agents register capabilities; orchestrator discovers them                                                           
+                                                                                                                                               
+  ---                                                                                                                                          
+  2. Architecture Diagram                                                                                                                      
+                                                                                                                                               
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                           PDLC PLATFORM                                     │
+  │                                                                             │                                                              
+  │  ┌──────────────┐     ┌───────────────────────────────────────────────┐    │
+  │  │  INGESTION   │────▶│           AGENT ORCHESTRATION LAYER           │    │                                                               
+  │  │              │     │                                               │    │
+  │  │  Linear MCP  │     │  ┌─────────────┐    ┌────────────────────┐  │    │                                                                 
+  │  │  Webhook     │     │  │  LangGraph  │    │  Agent Registry    │  │    │                                                                 
+  │  │  Direct API  │     │  │  Supervisor │    │  (plug-and-play)   │  │    │                                                                 
+  │  └──────────────┘     │  └──────┬──────┘    └────────────────────┘  │    │                                                                 
+  │                        │         │                                    │    │                                                               
+  │                        │  ┌──────▼──────────────────────────────┐   │    │
+  │                        │  │         AGENT RUNTIME POOL          │   │    │                                                                 
+  │                        │  │                                     │   │    │
+  │                        │  │  ┌──────────┐  ┌────────────────┐  │   │    │                                                                  
+  │                        │  │  │  Req.    │  │  Tech PM       │  │   │    │                                                                  
+  │                        │  │  │ Gathering│  │  Agent         │  │   │    │                                                                  
+  │                        │  │  └──────────┘  └────────────────┘  │   │    │                                                                  
+  │                        │  │  ┌──────────┐  ┌────────────────┐  │   │    │
+  │                        │  │  │Developer │  │  Code Reviewer │  │   │    │                                                                  
+  │                        │  │  │ Agent(s) │  │  Agent         │  │   │    │
+  │                        │  │  └──────────┘  └────────────────┘  │   │    │                                                                  
+  │                        │  │  ┌──────────┐  ┌────────────────┐  │   │    │
+  │                        │  │  │ Security │  │  QA/Testing    │  │   │    │                                                                  
+  │                        │  │  │ Auditor  │  │  Agent         │  │   │    │                                                                  
+  │                        │  │  └──────────┘  └────────────────┘  │   │    │                                                                  
+  │                        │  │  ┌──────────┐                      │   │    │                                                                  
+  │                        │  │  │  i18n    │                      │   │    │
+  │                        │  │  │  Agent   │                      │   │    │                                                                  
+  │                        │  │  └──────────┘                      │   │    │
+  │                        │  └─────────────────────────────────────┘   │    │                                                                 
+  │                        └───────────────────────────────────────────┘    │
+  │                                      │                                     │                                                               
+  │          ┌───────────────────────────┼───────────────────────────┐        │                                                                
+  │          ▼                           ▼                           ▼        │
+  │  ┌───────────────┐         ┌─────────────────┐        ┌──────────────┐   │                                                                 
+  │  │ MEMORY &      │         │  CODE           │        │ INTEGRATION  │   │                                                                 
+  │  │ CONTEXT STORE │         │  INTELLIGENCE   │        │ LAYER        │   │                                                                 
+  │  │               │         │  LAYER          │        │              │   │                                                                 
+  │  │ Redis (hot)   │         │  AST Parser     │        │ Linear MCP   │   │                                                                 
+  │  │ Postgres (cold│         │  Semantic Search│        │ GitHub API   │   │                                                                 
+  │  │ Vector DB     │         │  Code Embeddings│        │ CI/CD        │   │                                                                 
+  │  │ (embeddings)  │         │  Dep Graph      │        │ Slack        │   │                                                                 
+  │  └───────────────┘         └─────────────────┘        └──────────────┘   │                                                                 
+  │                                                                             │                                                              
+  │  ┌─────────────────────────────────────────────────────────────────────┐  │
+  │  │                    OBSERVABILITY LAYER                               │  │                                                               
+  │  │    OpenTelemetry traces │ Prometheus metrics │ Langfuse LLM traces  │  │
+  │  └─────────────────────────────────────────────────────────────────────┘  │                                                                
+  └─────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                               
+  DATA FLOW:      
+                                                                                                                                               
+  Linear Issue → Ingestion → [RequirementGathering Agent]                                                                                      
+                                         │
+                                StructuredSpec + UserStories                                                                                   
+                                         │
+                            [TechPM Agent] reads codebase                                                                                      
+                                         │
+                             Architecture + SubTask list                                                                                       
+                                         │
+                      ┌──────────────────┼──────────────────┐                                                                                  
+                      ▼                  ▼                  ▼                                                                                  
+               [Developer]        [Developer]        [Developer]
+               (frontend)         (backend)          (API layer)                                                                               
+                      │                  │                  │
+                      └──────────────────┼──────────────────┘                                                                                  
+                                         │ PRs                                                                                                 
+                            [Code Reviewer Agent]
+                                         │                                                                                                     
+                                    Review delta
+                                    ┌────┴────┐                                                                                                
+                                 PASS        FAIL → back to Developer
+                                    │                                                                                                          
+                            [Security Auditor]
+                                    │                                                                                                          
+                            [QA / Testing Agent]
+                                    │                                                                                                          
+                            [i18n / L10n Agent]
+                                    │
+                             merge + CI/CD trigger
+                                    │                                                                                                          
+                              SHIPPED ✓
+                                                                                                                                               
+  ---             
+  3. Core Components                                                                                                                           
+                  
+  Agent Orchestration Layer
+  - Responsibilities: Route tasks to agents, manage execution graphs, enforce ordering/dependencies, handle retries
+  - Design: LangGraph StateGraph with a Supervisor node. Each agent is a subgraph. Edges are conditional, driven by agent outputs and state    
+  - Key decision: Event-driven via Redis Streams — agents subscribe to topics (e.g., spec.ready, code.submitted), decouple producer/consumer
+                                                                                                                                               
+  Agent Runtime / Execution Engine                                                                                                             
+  - Responsibilities: Isolated execution sandbox per agent, tool access control, timeout enforcement, resource limits                          
+  - Design: Each agent run is a Temporal Workflow activity. Temporal handles retries, timeouts, and durable execution state                    
+  - Key decision: Agents never share mutable in-memory state — all state goes through the Context Store                    
+                                                                                                                                               
+  Memory & Context Store                                                                                                                       
+  - Responsibilities: Short-term (conversation context), long-term (codebase knowledge), semantic retrieval                                    
+  - Design: Redis for hot working memory (task state, agent scratchpad). Postgres for structured records (tasks, specs, audit log). Qdrant for 
+  vector embeddings of codebase + historical decisions                                                                                         
+  - Key decision: Context passed to agents is always retrieved, never passed-through raw — prevents prompt stuffing                            
+  
+  Code Intelligence Layer                                                                                                                      
+  - Responsibilities: Understand codebase structure, find relevant files, generate diffs, validate changes
+  - Design: Tree-sitter for AST parsing. Code embeddings (Voyage AI or OpenAI text-embedding-3-large) stored in Qdrant. Dependency graph built 
+  at ingestion time, incrementally updated                                                                                                    
+  - Key decision: Agents request code context via semantic search, not full-file dumps — controls token cost                                   
+                  
+  Integration Layer                                                                                                                            
+  - Responsibilities: Bidirectional sync with Linear, GitHub, CI/CD
+  - Design: Linear MCP Server (official) for task CRUD. GitHub App for PR creation, branch management, webhook consumption. GitHub Actions or  
+  ArgoCD for CI/CD trigger                                                                                                                   
+  - Key decision: All integration calls are async with idempotency keys — safe to retry                                                        
+                  
+  Observability & Governance                                                                                                                   
+  - Responsibilities: LLM call tracing, agent decision logging, cost tracking, anomaly detection
+  - Design: OpenTelemetry for distributed tracing. Langfuse for LLM-specific observability (prompts, tokens, latency, scores). Prometheus +    
+  Grafana for system metrics                                                                                                               
+  - Key decision: Every LLM call is logged with input, output, model, tokens, and cost before any side effect is taken                         
+                  
+  ---                                                                                                                                          
+  4. Agent Design 
+                                                                                                                                               
+  Requirement Gathering Agent
+  - Input: Raw vague requirement string + Linear issue metadata                                                                                
+  - Output: StructuredSpec (user stories, acceptance criteria, edge cases, open questions)                                                     
+  - Tools: linear_get_issue, linear_update_issue, search_codebase, clarify_via_context    
+  - Decision logic: Multi-turn self-questioning loop — generates questions, answers them from codebase context, iterates until confidence score
+   > 0.85                                                                                                                                      
+  - Failure handling: If codebase context unavailable, outputs spec with [NEEDS_CONTEXT] flags                                                 
+                                                                                                                                               
+  Technical PM Agent                                                                                                                           
+  - Input: StructuredSpec + codebase dependency graph
+  - Output: TechnicalSpec (architecture decisions, API contracts, DB schema changes, component list) + SubTaskList                             
+  - Tools: read_file, semantic_search_code, get_dependency_graph, create_architecture_diagram                     
+  - Decision logic: Reads relevant existing code, identifies reuse opportunities, designs minimal-change implementation                        
+  - Failure handling: Emits SPEC_INCOMPLETE event, blocks Developer agents until resolved                                                      
+                                                                                                                                               
+  Developer Agent (Full-Stack JS)                                                                                                              
+  - Input: SubTask + TechnicalSpec + relevant code context (semantic search result)                                                            
+  - Output: Code diff / PR                                                                                                                     
+  - Tools: read_file, write_file, run_linter, run_type_check, git_commit, create_pr                                                            
+  - Decision logic: Implements subtask, self-reviews against acceptance criteria, runs linter/types locally before submitting                  
+  - Failure handling: Max 3 self-fix attempts per subtask, then escalates with DEVELOPER_BLOCKED event                                         
+                                                                                                                                               
+  Code Reviewer Agent                                                                                                                          
+  - Input: PR diff + TechnicalSpec + coding standards doc                                                                                      
+  - Output: Structured review (APPROVED / CHANGES_REQUESTED with line comments)                                                                
+  - Tools: read_pr_diff, read_file, semantic_search_code, post_pr_comment, approve_pr                                                          
+  - Decision logic: Checks correctness, patterns, spec adherence, test coverage presence                                                       
+  - Failure handling: If diff is too large (> 500 lines), splits review into chunks with independent verdicts                                  
+                                                                                                                                               
+  Security Auditor Agent                                                                                                                       
+  - Input: PR diff + file tree of changed files                                                                                                
+  - Output: Security report (PASS / FAIL with CVE references, OWASP tags, severity)                                                            
+  - Tools: read_pr_diff, run_semgrep, check_dependency_vulnerabilities, post_pr_comment
+  - Decision logic: Runs static analysis first (Semgrep), then LLM-based review for business logic issues (auth bypass, IDOR, injection)       
+  - Failure handling: Any HIGH/CRITICAL finding blocks merge automatically; MEDIUM queued for human review                                     
+                                                                                                                                               
+  QA / Testing Agent                                                                                                                           
+  - Input: PR diff + TechnicalSpec + existing test files                                                                                       
+  - Output: New/updated test files, test run results                                                                                           
+  - Tools: read_file, write_file, run_tests, read_coverage_report
+  - Decision logic: Generates unit + integration tests, runs them, checks coverage delta (must not decrease), validates acceptance criteria    
+  - Failure handling: Failed tests re-trigger Developer agent with test output as context                                                      
+                                                                                                                                               
+  Localization Agent                                                                                                                           
+  - Input: Changed source files + translation key files                                                                                        
+  - Output: Updated translation files, missing key report                                                                                      
+  - Tools: read_file, grep_translation_keys, write_file, detect_hardcoded_strings
+  - Decision logic: Scans diff for hardcoded user-facing strings, generates translation keys, updates i18n files for all locales               
+  - Failure handling: Missing locale detected → emits warning, uses English fallback, creates Linear task for translator                       
+                                                                                                                                               
+  ---                                                                                                                                          
+  5. Workflow Orchestration                                                                                                                    
+                                                                                                                                               
+  Step 1:  Linear webhook fires → Ingestion Service → publishes to Redis Stream `issues.new`
+  Step 2:  Supervisor picks up event → creates WorkflowRun record → starts LangGraph execution                                                 
+  Step 3:  RequirementGathering Agent runs → publishes `spec.ready`                                                                            
+  Step 4:  TechPM Agent runs → publishes `tasks.decomposed`                                                                                    
+  Step 5:  Supervisor fans out SubTasks → Developer Agents run in parallel (independent tasks)                                                 
+           Dependent tasks queued until their dependencies complete                                                                            
+  Step 6:  Each Developer Agent opens a PR → publishes `pr.submitted`                                                                          
+  Step 7:  Code Reviewer, Security Auditor, QA Agent run in parallel against each PR                                                           
+  Step 8:  All three must PASS → Supervisor triggers merge                                                                                     
+           Any FAIL → targeted agent (Developer) re-runs with feedback                                                                         
+  Step 9:  i18n Agent runs post-merge scan → patches i18n files → auto-commit                                                                  
+  Step 10: CI/CD pipeline triggers on merge → deployment                                                                                       
+  Step 11: Supervisor marks Linear issue DONE, posts summary comment                                                                           
+                                                                                                                                               
+  Event-driven vs Synchronous: All inter-agent communication is event-driven via Redis Streams. Within a single agent's execution, LLM calls   
+  are synchronous (awaited). This means the system never has agents polling — they react.                                                      
+                                                                                                                                               
+  Retry & Rollback:
+  - Temporal activities retry with exponential backoff (max 5 attempts)
+  - Rollback: if CI fails post-merge, Supervisor opens revert PR automatically                                                                 
+  - Agent fix loops are capped at 3 iterations — beyond that, a human-review Linear task is created
+                                                                                                                                               
+  ---                                                                                                                                          
+  6. Data Flow                                                                                                                                 
+                                                                                                                                               
+  Raw Requirement (string)
+          │
+          ▼
+  StructuredSpec (Pydantic model — stored in Postgres + Redis)                                                                                 
+          │
+          ▼                                                                                                                                    
+  TechnicalSpec + SubTaskList (stored in Postgres, linked to Linear tasks)
+          │                                                                                                                                    
+          ├──▶ SubTask A ──▶ CodeDiff A ──▶ ReviewResult A
+          ├──▶ SubTask B ──▶ CodeDiff B ──▶ ReviewResult B                                                                                     
+          └──▶ SubTask C ──▶ CodeDiff C ──▶ ReviewResult C                                                                                     
+                                    │                                                                                                          
+                            MergedPR + DeployEvent                                                                                             
+                  
+  Context Sharing: Agents never receive full state. They receive a TaskContext envelope: task spec, relevant code snippets (top-K semantic     
+  search), and prior agent outputs for their task only. This prevents context bleed and keeps prompts lean.
+                                                                                                                                               
+  State Persistence: LangGraph checkpointing to Postgres via PostgresSaver. Every node transition is checkpointed — full replay possible from  
+  any step.
+                                                                                                                                               
+  ---             
+  7. Scalability & Performance
+                                                                                                                                               
+  - Parallel Agent Execution: LangGraph Send API fans out SubTasks to Developer Agents concurrently. Temporal schedules activities across a
+  worker pool (Kubernetes Deployments, autoscaled on CPU/queue depth)                                                                          
+  - Task Queue Design: Redis Streams with consumer groups. Priority lanes: critical, standard, background. Security reviews on critical, i18n
+  on background                                                                                                                                
+  - Latency Bottlenecks: LLM calls dominate. Mitigation: prompt caching (Anthropic cache_control), model routing (Haiku for
+  classification/routing, Sonnet for generation, Opus only for architecture decisions), request batching where possible                        
+  - Large Codebase: Code Intelligence Layer pre-computes embeddings at repo index time. Agents fetch top-K relevant chunks (not full files).
+  Incremental re-embedding on PR merge                                                                                                         
+                  
+  ---                                                                                                                                          
+  8. Security & Governance
+                                                                                                                                               
+  - Code Safety: Developer agents run in sandboxed containers (gVisor). File writes are restricted to the workspace. No network access except
+  allowlisted APIs                                                                                                                             
+  - Prompt Injection: All user-supplied content (requirement text, PR descriptions, issue comments) is wrapped in XML tags with clear role
+  labels. System prompt is always in cache_control block, never interpolated with user content                                                 
+  - Access Control: Each agent has a distinct API key with minimal permissions (Linear: read+write own project, GitHub: write one repo). No
+  agent has IAM or infrastructure access                                                                                                       
+  - Audit Trails: Every LLM call, tool invocation, file write, and API call is logged to append-only Postgres table with agent_id, timestamp,
+  input hash, output hash, model, tokens, cost                                                                                                 
+                  
+  ---                                                                                                                                          
+  9. Observability
+                  
+  - Logging: Structured JSON logs (agent_id, workflow_run_id, task_id, node, duration, status) → shipped to Datadog or Loki
+  - Tracing: OpenTelemetry spans for every node execution, nested under parent workflow trace. Langfuse for LLM-specific traces (prompt        
+  version, token usage, cost, eval scores)                                                                                                     
+  - Metrics: pdlc_workflow_duration_seconds, pdlc_agent_iterations_total, pdlc_fix_loop_count, pdlc_tasks_shipped_total,                       
+  pdlc_llm_cost_usd_total                                                                                                                      
+  - Dashboards: Grafana board showing pipeline throughput, per-agent failure rate, average fix loops per PR, LLM cost per shipped feature
+                                                                                                                                               
+  ---             
+  10. Failure Modes & Recovery                                                                                                                 
+                                                                                                                                               
+  ┌───────────────────────────────────────────┬────────────────────────────────────────┬───────────────────────────────────────────────────┐
+  │                  Failure                  │               Detection                │                     Recovery                      │   
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤
+  │ Agent hallucination (spec contradicts     │ Validator node cross-checks spec       │ Re-run with codebase context injected, flag for   │
+  │ codebase)                                 │ against AST                            │ review                                            │
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤   
+  │ Infinite fix loop                         │ Loop counter in state, cap=3           │ Escalate: create human-review Linear task, pause  │
+  │                                           │                                        │ workflow                                          │   
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤
+  │ Partial execution (agent crashes          │ Temporal heartbeat timeout             │ Resume from last checkpoint, re-run failed        │   
+  │ mid-task)                                 │                                        │ activity                                          │   
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤
+  │ LLM API timeout / rate limit              │ HTTP 429 / timeout exception           │ Exponential backoff retry; failover to secondary  │   
+  │                                           │                                        │ model                                             │   
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤
+  │ CI/CD failure post-merge                  │ GitHub Actions webhook                 │ Auto-create revert PR, notify via Linear comment  │   
+  ├───────────────────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────┤   
+  │ Security agent false positive             │ CRITICAL finding blocks merge          │ Confidence score < 0.9 → human-in-loop Linear     │
+  │                                           │                                        │ task                                              │   
+  └───────────────────────────────────────────┴────────────────────────────────────────┴───────────────────────────────────────────────────┘
+                                                                                                                                               
+  ---             
+  11. Tech Stack Recommendation
+                               
+  ┌───────────────────┬─────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────┐
+  │       Layer       │            Tool             │                                         Why                                         │    
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │ Agent             │ LangGraph                   │ Native cycles, conditional routing, checkpointing, streaming — purpose-built for    │    
+  │ orchestration     │                             │ multi-step agents                                                                   │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Durable execution │ Temporal                    │ Workflow durability, activity retries, long-running tasks survive restarts          │    
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ LLM provider      │ Anthropic Claude            │ Best code generation, 200k context, prompt caching reduces cost 80% on cached       │    
+  │                   │ (multi-model)               │ prompts                                                                             │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Event bus         │ Redis Streams               │ Sub-millisecond latency, consumer groups, no extra infra for small-medium scale     │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Hot memory        │ Redis                       │ Agent scratchpad, deduplication, rate limiting                                      │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Cold storage      │ Postgres + pgvector         │ Structured records + vector search in one DB for dev simplicity                     │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Code intelligence │ Tree-sitter + Qdrant        │ Language-agnostic AST parsing; Qdrant for high-performance vector similarity        │
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤    
+  │ Linear            │ Linear MCP Server           │ Official, maintained, tool-native                                                   │
+  │ integration       │                             │                                                                                     │    
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │ Observability     │ Langfuse                    │ Open-source, self-hostable, purpose-built for LLM pipelines                         │    
+  │ (LLM)             │                             │                                                                                     │    
+  ├───────────────────┼─────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │ Infra             │ Kubernetes + Helm           │ Agent worker pools autoscale independently                                          │    
+  └───────────────────┴─────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────┘    
+   
+  ---                                                                                                                                          
+  12. Future Enhancements
+                         
+  - Self-improving agents: Collect (input, output, human-accepted/rejected) pairs → fine-tune smaller models on successful patterns
+  - Learning loops: Track which specs led to most fix loops → feed back to RequirementGathering agent as few-shot examples                     
+  - Human-in-the-loop fallback: Any workflow can pause at any node, emit a Linear comment asking a specific question, and resume on response   
+  - Cost optimization router: Small classifier model decides Haiku vs. Sonnet vs. Opus per task, trained on task complexity signals
