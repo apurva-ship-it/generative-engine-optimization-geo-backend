@@ -1,17 +1,18 @@
 from datetime import datetime, timedelta
 from typing import Annotated
+import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
-from ..dependencies import get_client_ip, get_remaining_attempts
+from ..dependencies import get_client_ip, get_remaining_attempts, Settings
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 _users: dict[str, dict] = {}
-_revoked_refresh_tokens: set[str] = set()
+_revoked_refresh_token_hashes: set[str] = set()
 
 SECRET_KEY = "supersecretkey"
 ALGORITHM = "HS256"
@@ -25,6 +26,14 @@ class Credentials(BaseModel):
     username: str
     password: str
 
+    @validator("password")
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password too short, must be at least 8 characters")
+        if v.isnumeric() or v.isalpha():
+            raise ValueError("Password must contain both letters and numbers")
+        return v
+
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
@@ -32,6 +41,11 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
+
+
+def _hash_token(token: str) -> str:
+    """Deterministic SHA256 hash for refresh token storage."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def create_access_token(data: dict) -> str:
@@ -45,6 +59,8 @@ def create_refresh_token(data: dict) -> str:
 
 
 def _set_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    settings = Settings()
+    secure_flag = getattr(settings, "production", False)
     for key, value, max_age in [
         ("access_token", access_token, ACCESS_TOKEN_EXPIRE_MINUTES * 60),
         ("refresh_token", refresh_token, REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600),
@@ -53,8 +69,8 @@ def _set_cookies(response: Response, access_token: str, refresh_token: str) -> N
             key=key,
             value=value,
             httponly=True,
-            samesite="lax",
-            secure=False,
+            samesite="strict",
+            secure=secure_flag,
             max_age=max_age,
         )
 
@@ -110,7 +126,8 @@ async def refresh(request: Request, response: Response):
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh token missing")
-    if refresh_token in _revoked_refresh_tokens:
+    token_hash = _hash_token(refresh_token)
+    if token_hash in _revoked_refresh_token_hashes:
         raise HTTPException(status_code=401, detail="Refresh token revoked")
     try:
         payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -119,7 +136,9 @@ async def refresh(request: Request, response: Response):
             raise JWTError()
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    _revoked_refresh_tokens.add(refresh_token)
+    # revoke used token
+    _revoked_refresh_token_hashes.add(token_hash)
+    # issue new tokens
     access_token = create_access_token({"sub": user_id})
     new_refresh = create_refresh_token({"sub": user_id})
     _set_cookies(response, access_token, new_refresh)
@@ -130,7 +149,7 @@ async def refresh(request: Request, response: Response):
 async def logout(request: Request, response: Response):
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
-        _revoked_refresh_tokens.add(refresh_token)
+        _revoked_refresh_token_hashes.add(_hash_token(refresh_token))
     response.delete_cookie("access_token")
     response.delete_cookie("refresh_token")
     return {"msg": "Logged out"}
