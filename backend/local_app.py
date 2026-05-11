@@ -1,10 +1,3 @@
-"""
-Self-contained DocVault backend for local development.
-Uses SQLite + local filesystem — no AWS/Redis/PostgreSQL needed.
-
-Run: uvicorn local_app:app --reload --port 8000
-"""
-
 from __future__ import annotations
 
 import os
@@ -14,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import (
-    Cookie, Depends, FastAPI, File, Form, HTTPException, Request,
+    Cookie, Depends, FastAPI, File, Form, HTTPException, Query,
     Response, UploadFile, status,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +16,14 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer, String, create_engine, func,
+    Boolean, Column, DateTime, ForeignKey, Integer, String, Index, create_engine, func,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SECRET_KEY = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+SECRET_KEY = os.getenv("JWT_SECRET")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET environment variable must be set for production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
@@ -36,6 +31,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./docvault.db")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {"pdf", "ppt", "pptx", "doc", "docx", "html", "txt", "json"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB limit
 COOKIE_NAME = "access_token"
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -71,6 +67,10 @@ class FileRecord(Base):
     deleted_at = Column(DateTime, nullable=True)
     owner = relationship("User", back_populates="files")
     versions = relationship("FileVersion", back_populates="file", lazy="dynamic")
+    __table_args__ = (
+        Index("idx_files_owner", "owner_id"),
+        Index("idx_files_deleted", "deleted_at"),
+    )
 
 
 class FileVersion(Base):
@@ -177,6 +177,7 @@ def _set_auth_cookie(response: Response, user_id: int) -> str:
         key=COOKIE_NAME,
         value=token,
         httponly=True,
+        secure=True,
         samesite="lax",
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
@@ -224,23 +225,34 @@ def me(current_user: User = Depends(get_current_user)):
 
 # ── Files ─────────────────────────────────────────────────────────────────────
 @app.get("/api/v1/files")
-def list_files(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    files = (
+def list_files(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = (
         db.query(FileRecord)
         .filter(FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None))
         .order_by(FileRecord.created_at.desc())
-        .all()
     )
-    return [
-        {
-            "id": f.id,
-            "name": f.name,
-            "size": f.size_bytes,
-            "lastModified": f.created_at.isoformat(),
-            "versionCount": f.versions.count(),
-        }
-        for f in files
-    ]
+    total = query.count()
+    files = query.offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": f.id,
+                "name": f.name,
+                "size": f.size_bytes,
+                "lastModified": f.created_at.isoformat(),
+                "versionCount": f.versions.count(),
+            }
+            for f in files
+        ],
+    }
 
 @app.post("/api/v1/files/upload", status_code=201)
 def upload_file(
@@ -252,8 +264,9 @@ def upload_file(
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=415, detail=f"File type .{ext} not supported")
-
     content_bytes = file.file.read()
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
     storage_name = f"{uuid.uuid4().hex}.{ext}"
     storage_path = UPLOAD_DIR / storage_name
     storage_path.write_bytes(content_bytes)
@@ -399,5 +412,4 @@ def _get_file_or_404(file_id: int, owner_id: int, db: Session) -> FileRecord:
 
 @app.get("/health")
 def health():
-    # Explicit JSONResponse ensures proper CORS headers are applied
     return JSONResponse(content={"status": "ok"})
