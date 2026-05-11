@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 from ..dependencies import get_client_ip, get_remaining_attempts
 
@@ -24,6 +24,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class Credentials(BaseModel):
     username: str
     password: str
+
+    @validator("password")
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password too short, must be at least 8 characters")
+        if v.isnumeric() or v.isalpha():
+            raise ValueError("Password must contain both letters and numbers")
+        return v
 
 
 def verify_password(plain: str, hashed: str) -> bool:
