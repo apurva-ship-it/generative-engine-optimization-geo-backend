@@ -1,13 +1,26 @@
-"""FastAPI application factory with CORS and optional HTTPS enforcement middleware."""
-from fastapi import FastAPI, Request, status
+'''FastAPI application factory with CORS and optional HTTPS enforcement middleware.'''
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.responses import Response, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from .routers.files import router as files_router
 from .routers.auth import router as auth_router
+from .routers.generate_prompts import router as generate_prompts_router
 from .middleware.rate_limit import RateLimitMiddleware
 from .config import Settings
 
 app = FastAPI(title="File Management API")
 settings = Settings()
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Convert Pydantic validation errors to a 400 Bad Request response.
+    FastAPI defaults to 422, but the specification requires 400 with error details.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": exc.errors()},
+    )
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
@@ -40,3 +53,4 @@ async def security_middleware(request: Request, call_next):
 app.add_middleware(RateLimitMiddleware)
 app.include_router(files_router)
 app.include_router(auth_router)
+app.include_router(generate_prompts_router)
