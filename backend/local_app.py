@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import uuid
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
 
 from fastapi import (
     Cookie, Depends, FastAPI, File, Form, HTTPException, Query,
@@ -35,6 +36,7 @@ ALLOWED_EXTENSIONS = {"pdf", "ppt", "pptx", "doc", "docx", "html", "txt", "json"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB limit
 COOKIE_NAME = "access_token"
 REFRESH_COOKIE_NAME = "refresh_token"
+ENVIRONMENT = os.getenv("ENV", "development")
 
 # CORS origins from env
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
@@ -163,10 +165,27 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+# ── Rate limiting (simple in‑memory) ────────────────────────────────────────
+_login_attempts: Dict[str, List[float]] = {}
+LOGIN_LIMIT = 5  # attempts
+LOGIN_WINDOW = 60  # seconds
+
+def _check_rate_limit(ip: str) -> None:
+    now = time.time()
+    attempts = _login_attempts.get(ip, [])
+    attempts = [t for t in attempts if now - t < LOGIN_WINDOW]
+    if len(attempts) >= LOGIN_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many attempts")
+    attempts.append(now)
+    _login_attempts[ip] = attempts
+
+# Apply to mutating endpoints
+def rate_limit_dep(request: Request):
+    _check_rate_limit(request.client.host)
+
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="DocVault API", version="1.0.0")
 
-# CORS enforcement using env origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -175,10 +194,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# HTTPS enforcement middleware
 @app.middleware("http")
 async def enforce_https(request: Request, call_next):
-    if request.url.scheme != "https":
+    if ENVIRONMENT == "production" and request.url.scheme != "https":
         raise HTTPException(status_code=403, detail="HTTPS required")
     response = await call_next(request)
     return response
@@ -204,11 +222,17 @@ def _set_auth_cookie(response: Response, access_token: str, refresh_token: str) 
 
 
 def _validate_password_strength(pw: str) -> None:
-    if len(pw) < 8 or not re.search(r"[A-Za-z]", pw) or not re.search(r"[0-9]", pw):
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long and contain letters and numbers")
+    # At least 8 chars, one letter, one number, one special char
+    if (
+        len(pw) < 8
+        or not re.search(r"[A-Za-z]", pw)
+        or not re.search(r"[0-9]", pw)
+        or not re.search(r"[!@#$%^&*()_+=\-{}\[\]|\\:;\"'<>,.?/]", pw)
+    ):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long, contain letters, numbers, and a special character")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-@app.post("/api/v1/users", status_code=201)
+@app.post("/api/v1/users", status_code=201, dependencies=[Depends(rate_limit_dep)])
 def register(body: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -231,8 +255,9 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
     _set_auth_cookie(response, access_token, refresh_token)
     return {"id": user.id, "email": user.email}
 
-@app.post("/api/v1/auth/login")
-def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+@app.post("/api/v1/auth/login", dependencies=[Depends(rate_limit_dep)])
+def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    _check_rate_limit(request.client.host)
     user = db.query(User).filter(User.email == body.email).first()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -248,7 +273,8 @@ def logout(response: Response, db: Session = Depends(get_db), current_user: User
     current_user.refresh_token_hash = None
     db.commit()
     response.delete_cookie(COOKIE_NAME)
-    response.delete_cookie(REFRESH_COOKIE_NAME)
+    # Expire refresh token cookie
+    response.set_cookie(key=REFRESH_COOKIE_NAME, value="", httponly=True, secure=True, samesite="lax", max_age=0)
     return {"ok": True}
 
 @app.post("/api/v1/auth/refresh")
@@ -273,7 +299,122 @@ def me(current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "email": current_user.email, "fullName": current_user.full_name}
 
 # ── Files ─────────────────────────────────────────────────────────────────────
-# (remaining file endpoints unchanged) ...
+def _allowed_file(filename: str) -> bool:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return ext in ALLOWED_EXTENSIONS
+
+@app.get("/api/v1/files")
+def list_files(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    q = db.query(FileRecord).filter(FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None)).order_by(FileRecord.created_at.desc())
+    total = q.count()
+    items = q.offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": f.id,
+                "name": f.name,
+                "mime_type": f.mime_type,
+                "size_bytes": f.size_bytes,
+                "created_at": f.created_at.isoformat(),
+                "version_count": f.versions.count(),
+            }
+            for f in items
+        ],
+    }
+
+@app.post("/api/v1/files/upload", status_code=201, dependencies=[Depends(rate_limit_dep)])
+def upload_file(file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not _allowed_file(file.filename):
+        raise HTTPException(status_code=415, detail="Unsupported file type")
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
+    # Check for existing file name
+    existing = db.query(FileRecord).filter(FileRecord.owner_id == current_user.id, FileRecord.name == file.filename, FileRecord.deleted_at.is_(None)).first()
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    storage_name = f"{uuid.uuid4().hex}.{ext}"
+    storage_path = UPLOAD_DIR / storage_name
+    storage_path.write_bytes(content)
+    if existing:
+        # create new version
+        latest = existing.versions.order_by(FileVersion.version_number.desc()).first()
+        next_ver = (latest.version_number + 1) if latest else 1
+        ver = FileVersion(file_id=existing.id, version_number=next_ver, storage_path=str(storage_path), size_bytes=len(content))
+        db.add(ver)
+        existing.size_bytes = len(content)
+        db.commit()
+        return {"id": existing.id, "name": existing.name, "size_bytes": existing.size_bytes, "version": next_ver}
+    else:
+        rec = FileRecord(name=file.filename, mime_type=file.content_type, size_bytes=len(content), owner_id=current_user.id)
+        db.add(rec)
+        db.flush()
+        ver = FileVersion(file_id=rec.id, version_number=1, storage_path=str(storage_path), size_bytes=len(content))
+        db.add(ver)
+        db.commit()
+        db.refresh(rec)
+        return {"id": rec.id, "name": rec.name, "size_bytes": rec.size_bytes, "version": 1}
+
+@app.patch("/api/v1/files/{file_id}", dependencies=[Depends(rate_limit_dep)])
+def upload_new_version(file_id: int, file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not _allowed_file(file.filename):
+        raise HTTPException(status_code=415, detail="Unsupported file type")
+    rec = db.query(FileRecord).filter(FileRecord.id == file_id, FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
+    ext = rec.name.rsplit(".", 1)[-1].lower()
+    storage_name = f"{uuid.uuid4().hex}.{ext}"
+    storage_path = UPLOAD_DIR / storage_name
+    storage_path.write_bytes(content)
+    latest = rec.versions.order_by(FileVersion.version_number.desc()).first()
+    next_ver = (latest.version_number + 1) if latest else 1
+    ver = FileVersion(file_id=rec.id, version_number=next_ver, storage_path=str(storage_path), size_bytes=len(content))
+    db.add(ver)
+    rec.size_bytes = len(content)
+    db.commit()
+    return {"id": rec.id, "version": next_ver, "size_bytes": rec.size_bytes}
+
+@app.get("/api/v1/files/{file_id}/download")
+def download_file(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rec = db.query(FileRecord).filter(FileRecord.id == file_id, FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    ver = rec.versions.order_by(FileVersion.version_number.desc()).first()
+    return FileResponse(ver.storage_path, filename=rec.name)
+
+@app.delete("/api/v1/files/{file_id}", status_code=204, dependencies=[Depends(rate_limit_dep)])
+def delete_file(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rec = db.query(FileRecord).filter(FileRecord.id == file_id, FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    rec.deleted_at = datetime.utcnow()
+    db.commit()
+    return Response(status_code=204)
+
+@app.get("/api/v1/files/{file_id}/versions")
+def list_versions(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rec = db.query(FileRecord).filter(FileRecord.id == file_id, FileRecord.owner_id == current_user.id, FileRecord.deleted_at.is_(None)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    return [
+        {
+            "id": v.id,
+            "version_number": v.version_number,
+            "size_bytes": v.size_bytes,
+            "created_at": v.created_at.isoformat(),
+        }
+        for v in rec.versions.order_by(FileVersion.version_number.desc()).all()
+    ]
+
+# Root & health
+@app.get("/")
+def root():
+    return JSONResponse(content={"message": "DocVault API"})
 
 @app.get("/health")
 def health():

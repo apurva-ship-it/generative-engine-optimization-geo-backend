@@ -1,2 +1,4 @@
-#!/usr/bin/env bash
-python -m pytest "$@"
+#!/usr/bin/env python
+import sys
+import subprocess
+sys.exit(subprocess.call([sys.executable, '-m', 'pytest'] + sys.argv[1:]))
