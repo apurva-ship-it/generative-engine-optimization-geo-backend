@@ -1,18 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, status, Response
 from typing import List
 from datetime import datetime
 
 router = APIRouter(prefix="/v1/files")
 
-# Simple in‑memory store to simulate database
 files_db: dict[int, dict] = {
     1: {"name": "file1.txt", "deleted_at": None},
     2: {"name": "file2.txt", "deleted_at": None},
 }
 
 @router.get("/", response_model=List[str])
-async def list_files(db: AsyncSession):
+async def list_files():
     return [f["name"] for f in files_db.values() if f["deleted_at"] is None]
 
 @router.post("/upload")
