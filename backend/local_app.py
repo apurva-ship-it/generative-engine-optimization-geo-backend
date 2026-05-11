@@ -83,7 +83,6 @@ class FileVersion(Base):
     created_at = Column(DateTime, server_default=func.now())
     file = relationship("FileRecord", back_populates="versions")
 
-
 Base.metadata.create_all(bind=engine)
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -131,7 +130,6 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class RegisterRequest(BaseModel):
     fullName: Optional[str] = None
@@ -141,11 +139,9 @@ class RegisterRequest(BaseModel):
     sex: Optional[str] = None
     password: str
 
-
 class LoginRequest(BaseModel):
     email: str
     password: str
-
 
 class FileOut(BaseModel):
     id: int
@@ -158,13 +154,11 @@ class FileOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 class VersionOut(BaseModel):
     id: int
     version_number: int
     size_bytes: int
     created_at: datetime
-
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="DocVault API", version="1.0.0")
@@ -177,7 +171,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def _set_auth_cookie(response: Response, user_id: int) -> str:
     token = create_access_token(user_id)
     response.set_cookie(
@@ -188,7 +181,6 @@ def _set_auth_cookie(response: Response, user_id: int) -> str:
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     return token
-
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @app.post("/api/v1/users", status_code=201)
@@ -209,7 +201,6 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
     _set_auth_cookie(response, user.id)
     return {"id": user.id, "email": user.email}
 
-
 @app.post("/api/v1/auth/login")
 def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email).first()
@@ -218,12 +209,10 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
     _set_auth_cookie(response, user.id)
     return {"id": user.id, "email": user.email}
 
-
 @app.post("/api/v1/auth/logout")
 def logout(response: Response):
     response.delete_cookie(COOKIE_NAME)
     return {"ok": True}
-
 
 @app.get("/api/v1/users/me")
 def me(current_user: User = Depends(get_current_user)):
@@ -232,7 +221,6 @@ def me(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "fullName": current_user.full_name,
     }
-
 
 # ── Files ─────────────────────────────────────────────────────────────────────
 @app.get("/api/v1/files")
@@ -253,7 +241,6 @@ def list_files(current_user: User = Depends(get_current_user), db: Session = Dep
         }
         for f in files
     ]
-
 
 @app.post("/api/v1/files/upload", status_code=201)
 def upload_file(
@@ -290,7 +277,6 @@ def upload_file(
     db.commit()
     db.refresh(rec)
 
-    # Try to return text content for preview
     try:
         content_text = content_bytes.decode("utf-8", errors="replace")
     except Exception:
@@ -304,7 +290,6 @@ def upload_file(
         "versionCount": 1,
     }
 
-
 @app.get("/api/v1/files/{file_id}/download")
 def download_file(
     file_id: int,
@@ -316,7 +301,6 @@ def download_file(
     if not ver:
         raise HTTPException(status_code=404)
     return FileResponse(ver.storage_path, filename=rec.name)
-
 
 @app.get("/api/v1/files/{file_id}/content")
 def get_content(
@@ -335,7 +319,6 @@ def get_content(
         raise HTTPException(status_code=404)
     content = Path(ver.storage_path).read_text(errors="replace")
     return {"content": content, "version": ver.version_number, "name": rec.name}
-
 
 @app.put("/api/v1/files/{file_id}/content")
 def update_content(
@@ -362,7 +345,6 @@ def update_content(
     db.commit()
     return {"version": next_num, "size_bytes": rec.size_bytes}
 
-
 @app.get("/api/v1/files/{file_id}/versions")
 def list_versions(
     file_id: int,
@@ -374,7 +356,6 @@ def list_versions(
         {"id": v.id, "version_number": v.version_number, "size_bytes": v.size_bytes, "created_at": v.created_at.isoformat()}
         for v in rec.versions.order_by(FileVersion.version_number.desc()).all()
     ]
-
 
 @app.get("/api/v1/files/{file_id}/diff")
 def diff_versions(
@@ -395,7 +376,6 @@ def diff_versions(
     diff = list(difflib.unified_diff(lines1, lines2, fromfile=f"v{v1}", tofile=f"v{v2}"))
     return {"old_version": v1, "new_version": v2, "diff_lines": diff}
 
-
 @app.delete("/api/v1/files/{file_id}", status_code=204)
 def delete_file(
     file_id: int,
@@ -407,7 +387,6 @@ def delete_file(
     db.commit()
     return Response(status_code=204)
 
-
 def _get_file_or_404(file_id: int, owner_id: int, db: Session) -> FileRecord:
     rec = db.query(FileRecord).filter(
         FileRecord.id == file_id,
@@ -418,7 +397,7 @@ def _get_file_or_404(file_id: int, owner_id: int, db: Session) -> FileRecord:
         raise HTTPException(status_code=404, detail="File not found")
     return rec
 
-
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # Explicit JSONResponse ensures proper CORS headers are applied
+    return JSONResponse(content={"status": "ok"})
