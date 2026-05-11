@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ProgressBar from '../components/ProgressBar';
+import Toast from '../components/Toast';
 
 const MAX_SIZE = 1 * 1024 * 1024; // 1 MB
 
@@ -9,6 +11,8 @@ const HomePage: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState<string>('');
+  const [progress, setProgress] = useState<number>(0);
+  const [showToast, setShowToast] = useState<boolean>(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Redirect to /login if no auth cookie is present
@@ -50,9 +54,34 @@ const HomePage: React.FC = () => {
 
     setLoading(true);
     setError('');
+    setProgress(0);
     try {
       const formData = new FormData();
       formData.append('file', file);
+
+      // Use XMLHttpRequest to track progress
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/v1/files/upload');
+        xhr.withCredentials = true;
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            setProgress(percent);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error('Upload failed'));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error'));
+        xhr.send(formData);
+      });
+
+      // After successful upload, fetch preview content
       const res = await fetch('/api/v1/files/upload', {
         method: 'POST',
         credentials: 'include',
@@ -62,13 +91,15 @@ const HomePage: React.FC = () => {
       if (!res.ok) {
         setError(data.error || 'Upload failed');
         setPreview('');
-        return;
+      } else {
+        setPreview(data.content);
+        setShowToast(true);
       }
-      setPreview(data.content);
-    } catch {
-      setError('Network error — is the backend running?');
+    } catch (err) {
+      setError((err as Error).message || 'Network error — is the backend running?');
     } finally {
       setLoading(false);
+      setProgress(0);
     }
   };
 
@@ -126,6 +157,7 @@ const HomePage: React.FC = () => {
           >
             {loading ? 'Uploading…' : 'Upload & Preview'}
           </button>
+          {loading && <ProgressBar progress={progress} />}
         </div>
 
         {error && (
@@ -154,6 +186,7 @@ const HomePage: React.FC = () => {
             </pre>
           </div>
         )}
+        {showToast && <Toast message="Upload successful" onClose={() => setShowToast(false)} />}
       </div>
     </div>
   );

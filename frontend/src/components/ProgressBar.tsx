@@ -6,10 +6,24 @@ interface ProgressBarProps {
 
 const ProgressBar: React.FC<ProgressBarProps> = ({ progress }) => {
   return (
-    <div className="w-full bg-gray-200 rounded-full h-4">
+    <div
+      style={{
+        width: '100%',
+        backgroundColor: '#e0e0e0',
+        borderRadius: 9999,
+        height: 16,
+        overflow: 'hidden',
+        marginTop: 12,
+      }}
+    >
       <div
-        className="h-full bg-blue-500 rounded-full"
-        style={{ width: `${progress}%` }}
+        style={{
+          height: '100%',
+          width: `${Math.min(100, Math.max(0, progress))}%`,
+          backgroundColor: '#1976d2',
+          borderRadius: 9999,
+          transition: 'width 0.2s ease',
+        }}
         role="progressbar"
         aria-valuenow={progress}
         aria-valuemin={0}

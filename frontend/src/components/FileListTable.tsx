@@ -29,7 +29,7 @@ const FileListTable: React.FC<FileListTableProps> = ({ files }) => {
   };
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-visible sm:overflow-x-auto">
       <table className="min-w-full border-collapse">
         <thead>
           <tr className="bg-gray-100">

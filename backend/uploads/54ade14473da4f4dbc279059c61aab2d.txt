@@ -1,0 +1,55 @@
+Build a production-grade web application with the following capabilities:
+
+## Authentication & Security
+- User registration with email + password
+- User login with secure session management
+- Passwords hashed with bcrypt (never stored in plain text)
+- JWT tokens stored in httpOnly, SameSite=Strict cookies (not localStorage)
+- Token refresh mechanism with short-lived access tokens (15 min) and long-lived refresh tokens (7 days)
+- Rate limiting on auth endpoints (max 5 failed login attempts → 15 min lockout)
+- CORS configured for production domains only
+- All API responses use HTTPS, no sensitive data in URLs
+- Input validation and sanitisation on all endpoints
+- SQL injection protection via ORM (no raw queri
+- Must support 100 concurrent users in production
+
+## File Management
+- After login, user sees a dashboard with their uploaded files
+- Upload one or multiple files in a single request
+- Supported formats: PDF, PPT/PPTX, DOC/DOCX, HTML, TXT, JSON
+- Files stored in AWS S3 (private bucket, pre-signed URLs for access)
+- File size limit: 50 MB per file
+- Upload progress indicator on frontend
+
+## File Editing & Versioning
+- User can open and edit a file's content directly in the browser (text-based: TXT, HTML, JSON)
+- For binary formats (PDF, PPT, DOC), show metadata and allow replacing with a new upload
+- Every save creates a new version — full version history is retained in S3
+- User can view list of all versions (timestamp, size, who saved it)
+- User can restore any previous version
+- User can diff between any two versions (text files)
+
+## Frontend
+- Clean, modern React UI with TypeScript
+- Tailwind CSS for styling
+- File list view with name, type icon, size, last modified, version count
+- Upload area with drag-and-drop support
+- Version history panel (slide-out drawer)
+- Real-time upload progress bar
+- Toast notifications for actions (upload success, save, error)
+- Responsive layout (desktop first, mobile usable)
+
+## Backend API (FastAPI)
+- POST /auth/register
+- POST /auth/login
+- POST /auth/logout
+- POST /auth/refresh
+- GET  /files              (list user's files)
+- POST /files/upload       (upload one or more files)
+- GET  /files/{id}         (file metadata + current version URL)
+- PUT  /files/{id}/content (save edited content → new version)
+- GET  /files/{id}/versions (list all versions)
+- GET  /files/{id}/versions/{version_id} (get specific version content URL)
+- POST /files/{id}/restore/{version_id}  (restore a version)
+- GET  /files/{id}/diff   (diff between two version IDs, text files only)
+- DELETE /files/{id}       (soft delete)
