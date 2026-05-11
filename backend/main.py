@@ -6,6 +6,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from .routers.files import router as files_router
 from .routers.auth import router as auth_router
 from .routers.generate_prompts import router as generate_prompts_router
+from .routers.run_prompt import router as run_prompt_router
 from .middleware.rate_limit import RateLimitMiddleware
 from .config import Settings
 
@@ -54,3 +55,4 @@ app.add_middleware(RateLimitMiddleware)
 app.include_router(files_router)
 app.include_router(auth_router)
 app.include_router(generate_prompts_router)
+app.include_router(run_prompt_router)
